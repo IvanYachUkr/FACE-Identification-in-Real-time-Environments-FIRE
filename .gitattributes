@@ -1,0 +1,4 @@
+weights/facenet128.onnx filter=lfs diff=lfs merge=lfs -text
+weights/facenet512.onnx filter=lfs diff=lfs merge=lfs -text
+weights/face_detection_yunet_2023mar.onnx filter=lfs diff=lfs merge=lfs -text
+weights/retinaface.onnx filter=lfs diff=lfs merge=lfs -text
