@@ -448,14 +448,14 @@ class FaceRecognition:
 
     def add_face(self, image: np.ndarray, label: str) -> bool:
         """
-        Add a new face to the database with the given label.
+        Add new faces to the database with the given label.
 
         Args:
             image (numpy.ndarray): Input image in BGR format.
-            label (str): Label/name for the face.
+            label (str): Label/name for the faces.
 
         Returns:
-            bool: True if the face was added successfully, False otherwise.
+            bool: True if at least one face was added successfully, False otherwise.
         """
         try:
             # Detect and extract faces
@@ -464,52 +464,53 @@ class FaceRecognition:
                 logging.warning("No faces detected to add.")
                 return False
 
-            # For simplicity, take the first detected face
-            face_img = faces[0]
+            success = False
+            for face_img in faces:
+                # Preprocess the face image for the encoder
+                preprocessed_face = self._preprocess_for_encoder(face_img)
 
-            # Preprocess the face image for the encoder
-            preprocessed_face = self._preprocess_for_encoder(face_img)
+                # Get the embedding
+                start_encoding = time.time()
+                embedding = self.encoder(preprocessed_face)
+                encoding_time = time.time() - start_encoding
+                self.total_encoding_time += encoding_time
 
-            # Get the embedding
-            start_encoding = time.time()
-            embedding = self.encoder(preprocessed_face)
-            encoding_time = time.time() - start_encoding
-            self.total_encoding_time += encoding_time
+                # Ensure embedding is a 1D vector
+                if len(embedding.shape) > 1:
+                    embedding = embedding.squeeze()
 
-            # Ensure embedding is a 1D vector
-            if len(embedding.shape) > 1:
-                embedding = embedding.squeeze()
+                # Validate embedding dimensions
+                if embedding.shape[0] != self.embedding_dim:
+                    logging.error(f"Invalid embedding size: expected {self.embedding_dim}, got {embedding.shape[0]}")
+                    continue
 
-            # Validate embedding dimensions
-            if embedding.shape[0] != self.embedding_dim:
-                logging.error(f"Invalid embedding size: expected {self.embedding_dim}, got {embedding.shape[0]}")
-                return False
+                norm = np.linalg.norm(embedding)
+                if norm == 0:
+                    logging.error("Received zero vector from encoder. Skipping this face.")
+                    continue
+                embedding = embedding / norm  # Normalize the embedding
 
-            norm = np.linalg.norm(embedding)
-            if norm == 0:
-                logging.error("Received zero vector from encoder. Skipping this face.")
-                return False
-            embedding = embedding / norm  # Normalize the embedding
+                # Before adding, check if it is sufficiently different from existing embeddings
+                if self.hnsw_index.get_current_count() > 0:
+                    labels, distances = self.hnsw_index.knn_query(embedding, k=1)
+                    if labels.size > 0:
+                        cosine_similarity = 1 - (distances[0][0] ** 2) / 2
+                        if cosine_similarity > self.similarity_threshold:
+                            logging.info(
+                                f"Face is too similar to an existing face (Label: {self.hnsw_labels[labels[0][0]]}). Not adding.")
+                            continue
 
-            # Before adding, check if it is sufficiently different from existing embeddings
-            if self.hnsw_index.get_current_count() > 0:
-                labels, distances = self.hnsw_index.knn_query(embedding, k=1)
-                if labels.size > 0:
-                    cosine_similarity = 1 - (distances[0][0] ** 2) / 2
-                    if cosine_similarity > self.similarity_threshold:
-                        logging.info("Face is too similar to an existing face. Not adding.")
-                        return False
-
-            # Add to the new embeddings buffer
-            self.new_embeddings.append(embedding)
-            self.new_labels.append(label)
-            logging.info(f"Added face for label '{label}' to the new embeddings buffer.")
+                # Add to the new embeddings buffer
+                self.new_embeddings.append(embedding)
+                self.new_labels.append(label)
+                logging.info(f"Added face for label '{label}' to the new embeddings buffer.")
+                success = True
 
             # If new embeddings exceed the maximum, flush them
             if len(self.new_embeddings) >= self.max_new:
                 self._flush_new_embeddings()
 
-            return True
+            return success
         except Exception as e:
             logging.error(f"Error in add_face: {e}")
             return False
@@ -623,7 +624,8 @@ class FaceRecognition:
 
         self.frame_index += 1
 
-        if ((self.frame_index % self.detection_interval == 0) or (self.frame_index == 1)):
+        if (self.frame_index % self.detection_interval == 0):
+        # if ((self.frame_index % self.detection_interval == 0) or (self.frame_index == 1)):
             # Perform face detection
             start_detection = time.time()
             detected_faces = self.detect_faces(image)
@@ -963,15 +965,26 @@ class FaceRecognition:
                 fourcc = cv2.VideoWriter_fourcc(*'XVID')
                 fps = cap.get(cv2.CAP_PROP_FPS)
                 if fps == 0:
-                    fps = 30  # Default FPS
+                    fps = 30  # Default FPS if unable to get from input
                 width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                temp_video_path = None
+
                 if self.encryption_password:
-                    # Write frames to a temporary video file
-                    self.video_temp_fd, self.video_temp_path = tempfile.mkstemp(suffix=".avi")
-                    out = cv2.VideoWriter(self.video_temp_path, fourcc, fps, (width, height))
+                    # Create a temporary video file
+                    temp_video_fd, temp_video_path = tempfile.mkstemp(suffix=".avi")
+                    os.close(temp_video_fd)  # Close the file descriptor as VideoWriter will handle the file
+                    out = cv2.VideoWriter(temp_video_path, fourcc, fps, (width, height))
+                    if not out.isOpened():
+                        logging.error("Failed to open temporary video writer.")
+                        return
+                    logging.info(f"Writing annotated video frames to temporary file: {temp_video_path}")
                 else:
+                    # Directly write to the specified save_path
                     out = cv2.VideoWriter(save_path, fourcc, fps, (width, height))
+                    if not out.isOpened():
+                        logging.error(f"Failed to open video writer for {save_path}.")
+                        return
                     logging.info(f"Saving annotated video to {save_path}")
             else:
                 out = None
@@ -987,7 +1000,7 @@ class FaceRecognition:
                 if not ret:
                     break
 
-                # Recognize faces (detection and recognition are now synchronized)
+                # Recognize faces (detection and recognition are synchronized)
                 recognized_faces = self.recognize_faces(frame)
 
                 # Annotate frame
@@ -1010,30 +1023,33 @@ class FaceRecognition:
                 if self.show:
                     cv2.imshow('Face Recognition - Video', annotated_frame)
                     if cv2.waitKey(1) & 0xFF == ord('q'):
+                        logging.info("User requested to quit video processing.")
                         break
 
                 if out:
-                    if self.encryption_password:
-                        # Encode frame to bytes
-                        _, buffer = cv2.imencode('.avi', annotated_frame)
-                        frame_bytes = buffer.tobytes()
-                        # Write bytes to temporary file
-                        with open(self.video_temp_path, 'ab') as tmp_video:
-                            tmp_video.write(frame_bytes)
-                    else:
-                        out.write(annotated_frame)
+                    out.write(annotated_frame)
 
             cap.release()
             if out:
                 out.release()
-                if self.encryption_password:
-                    # Read temporary video file
-                    with open(self.video_temp_path, 'rb') as tmp_video:
-                        video_bytes = tmp_video.read()
-                    # Encrypt and save to desired path
-                    self._encrypt_and_write(save_path, video_bytes)
-                    # Remove temporary file
-                    os.remove(self.video_temp_path)
+                if self.encryption_password and temp_video_path:
+                    try:
+                        # Read the temporary video file
+                        with open(temp_video_path, 'rb') as tmp_video:
+                            video_bytes = tmp_video.read()
+
+                        # Encrypt and save to the desired path
+                        self._encrypt_and_write(save_path, video_bytes)
+                        logging.info(f"Encrypted video saved to {save_path}")
+
+                        # Remove the temporary file
+                        os.remove(temp_video_path)
+                        logging.info(f"Temporary video file {temp_video_path} removed.")
+                    except Exception as e:
+                        logging.error(f"Error during encryption of video: {e}")
+                elif not self.encryption_password:
+                    logging.info(f"Annotated video saved to {save_path}")
+
             if self.show:
                 cv2.destroyAllWindows()
 
@@ -1073,15 +1089,26 @@ class FaceRecognition:
                 fourcc = cv2.VideoWriter_fourcc(*'XVID')
                 fps = cap.get(cv2.CAP_PROP_FPS)
                 if fps == 0:
-                    fps = 30  # Default FPS
+                    fps = 30  # Default FPS if unable to get from webcam
                 width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                temp_video_path = None
+
                 if self.encryption_password:
-                    # Write frames to a temporary video file
-                    self.video_temp_fd, self.video_temp_path = tempfile.mkstemp(suffix=".avi")
-                    out = cv2.VideoWriter(self.video_temp_path, fourcc, fps, (width, height))
+                    # Create a temporary video file
+                    temp_video_fd, temp_video_path = tempfile.mkstemp(suffix=".avi")
+                    os.close(temp_video_fd)  # Close the file descriptor as VideoWriter will handle the file
+                    out = cv2.VideoWriter(temp_video_path, fourcc, fps, (width, height))
+                    if not out.isOpened():
+                        logging.error("Failed to open temporary video writer.")
+                        return
+                    logging.info(f"Writing annotated webcam frames to temporary file: {temp_video_path}")
                 else:
+                    # Directly write to the specified save_path
                     out = cv2.VideoWriter(save_path, fourcc, fps, (width, height))
+                    if not out.isOpened():
+                        logging.error(f"Failed to open video writer for {save_path}.")
+                        return
                     logging.info(f"Saving annotated webcam video to {save_path}")
             else:
                 out = None
@@ -1123,23 +1150,18 @@ class FaceRecognition:
                         cv2.imshow('Face Recognition - Webcam', annotated_frame)
                         # Press 'q' to quit
                         if cv2.waitKey(1) & 0xFF == ord('q'):
+                            logging.info("User requested to quit webcam processing.")
                             break
 
                     if out:
-                        if self.encryption_password:
-                            # Encode frame to bytes
-                            _, buffer = cv2.imencode('.avi', annotated_frame)
-                            frame_bytes = buffer.tobytes()
-                            # Write bytes to temporary file
-                            with open(self.video_temp_path, 'ab') as tmp_video:
-                                tmp_video.write(frame_bytes)
-                        else:
-                            out.write(annotated_frame)
+                        out.write(annotated_frame)
 
                     # Handle duration
-                    if 0 < duration < (time.time() - self.start_time):
-                        logging.info(f"Duration of {duration} seconds reached. Stopping webcam.")
-                        break
+                    if duration > 0:
+                        elapsed_time = time.time() - self.start_time
+                        if elapsed_time >= duration:
+                            logging.info(f"Duration of {duration} seconds reached. Stopping webcam.")
+                            break
 
             except KeyboardInterrupt:
                 logging.info("KeyboardInterrupt received. Stopping webcam.")
@@ -1147,14 +1169,23 @@ class FaceRecognition:
                 cap.release()
                 if out:
                     out.release()
-                    if self.encryption_password:
-                        # Read temporary video file
-                        with open(self.video_temp_path, 'rb') as tmp_video:
-                            video_bytes = tmp_video.read()
-                        # Encrypt and save to desired path
-                        self._encrypt_and_write(save_path, video_bytes)
-                        # Remove temporary file
-                        os.remove(self.video_temp_path)
+                    if self.encryption_password and temp_video_path:
+                        try:
+                            # Read the temporary video file
+                            with open(temp_video_path, 'rb') as tmp_video:
+                                video_bytes = tmp_video.read()
+
+                            # Encrypt and save to the desired path
+                            self._encrypt_and_write(save_path, video_bytes)
+                            logging.info(f"Encrypted webcam video saved to {save_path}")
+
+                            # Remove the temporary file
+                            os.remove(temp_video_path)
+                            logging.info(f"Temporary video file {temp_video_path} removed.")
+                        except Exception as e:
+                            logging.error(f"Error during encryption of webcam video: {e}")
+                    elif not self.encryption_password:
+                        logging.info(f"Annotated webcam video saved to {save_path}")
                 if self.show:
                     cv2.destroyAllWindows()
 
@@ -1250,7 +1281,8 @@ if __name__ == "__main__":
         similarity_threshold=0.85,  # Adjusted threshold
         enable_logging=args.log,
         show=args.show,
-        unknown_trigger_count=0,  # Set to 0 for image mode, adjust as needed
+        unknown_trigger_count=0 if args.mode == "image" else 3,  # Set to 0 for image mode, adjust as needed
+        detection_interval=1 if args.mode == "image" else 7,  # Set to 1 for image mode, adjust as needed
         encryption_password=args.password,  # Pass the encryption password
         hnsw_index_path=args.hnsw_index_path,
         hnsw_labels_path=args.hnsw_labels_path,
