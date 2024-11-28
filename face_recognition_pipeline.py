@@ -13,6 +13,7 @@ import hnswlib
 from facenet_gpu import FaceNetClient
 from yunet_face_detector import detect_faces as detect_faces_yunet, extract_faces as extract_faces_yunet
 from sort_UKF import Sort
+# from sort_CKF import Sort
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
@@ -29,7 +30,7 @@ class FaceRecognition:
                  unknown_trigger_count: int = 3,  # K value
                  enable_logging: bool = True,
                  show: bool = False,
-                 detection_interval: int = 7,  # Added detection_interval parameter
+                 detection_interval: int = 1,  # Added detection_interval parameter
                  hnsw_index_path: str = None,       # Modified to allow None
                  hnsw_labels_path: str = None,      # Modified to allow None
                  hnsw_db_ids_path: str = None,      # Modified to allow None
@@ -157,7 +158,7 @@ class FaceRecognition:
         self.unknown_faces = {}  # {track_id: {'embeddings': [np.ndarray], 'count': int}}
 
         # Initialize the SORT tracker
-        self.face_tracker = Sort(max_age=60, min_hits=unknown_trigger_count, iou_threshold=0.2)
+        self.face_tracker = Sort(max_age=60, min_hits=3, iou_threshold=0.3)
         self.track_id_to_label = {}  # Mapping from track ID to face label
 
     def _initialize_encryption(self):
@@ -781,14 +782,13 @@ class FaceRecognition:
                     self.hnsw_index.add_items(embedding, self.hnsw_id_counter)
                     self.hnsw_labels.append(rename_label)
                     self.hnsw_db_ids.append(db_id)
+                    logging.info(f"Added '{rename_label}' to HNSWlib index with hnsw_id {self.hnsw_id_counter}.")
                     self.hnsw_id_counter += 1
-                    logging.info(f"Added '{rename_label}' to HNSWlib index with hnsw_id {self.hnsw_id_counter -1}.")
             else:
                 logging.warning("HNSWlib index has reached its maximum capacity. Cannot add more embeddings.")
 
-            # If new embeddings exceed the maximum, flush them
-            if len(self.new_embeddings) >= self.max_new:
-                self._flush_new_embeddings()
+            # **Immediate Flushing:** Flush the new embeddings to ensure they are saved promptly
+            self._flush_new_embeddings()
 
             return rename_label
         else:
@@ -810,7 +810,8 @@ class FaceRecognition:
                     if labels.size > 0:
                         cosine_similarity = 1 - (distances[0][0] ** 2) / 2
                         if cosine_similarity > self.similarity_threshold:
-                            existing_label = self.hnsw_labels[labels[0][0]] if labels[0][0] < len(self.hnsw_labels) else "Unknown"
+                            existing_label = self.hnsw_labels[labels[0][0]] if labels[0][0] < len(
+                                self.hnsw_labels) else "Unknown"
                             logging.info("Unknown face is too similar to an existing face. Not adding.")
                             return existing_label
 
@@ -819,26 +820,26 @@ class FaceRecognition:
                 self.new_labels.append(unique_label)
                 logging.info(f"Added unknown face as '{unique_label}' to the new embeddings buffer.")
 
-                # Add to HNSWlib index
+                # Add to HNSWlib index and SQLite
                 if self.hnsw_id_counter < 100000:
                     db_id = self._add_to_sqlite(unique_label, avg_embedding)
                     if db_id != -1:
                         self.hnsw_index.add_items(avg_embedding, self.hnsw_id_counter)
                         self.hnsw_labels.append(unique_label)
                         self.hnsw_db_ids.append(db_id)
+                        logging.info(f"Added '{unique_label}' to HNSWlib index with hnsw_id {self.hnsw_id_counter}.")
                         self.hnsw_id_counter += 1
-                        logging.info(f"Added '{unique_label}' to HNSWlib index with hnsw_id {self.hnsw_id_counter -1}.")
                 else:
                     logging.warning("HNSWlib index has reached its maximum capacity. Cannot add more embeddings.")
 
-                # If new embeddings exceed the maximum, flush them
-                if len(self.new_embeddings) >= self.max_new:
-                    self._flush_new_embeddings()
+                # **Immediate Flushing:** Flush the new embeddings to ensure they are saved promptly
+                self._flush_new_embeddings()
 
-                # Remove from unknown_faces
+                # Remove from unknown_faces as it has now been assigned a unique label
                 del self.unknown_faces[track_id]
                 return unique_label
             else:
+                # Not enough detections yet to assign a unique label
                 return "Unknown"
 
     def _generate_unique_label(self) -> str:
@@ -1078,131 +1079,131 @@ class FaceRecognition:
             duration (int): Duration in seconds to record. If 0, run indefinitely until 'Ctrl+C' is pressed.
             name (str): Name to assign to faces recognized during the webcam stream.
         """
-        try:
-            cap = cv2.VideoCapture(0)
-            if not cap.isOpened():
-                logging.error("Cannot open webcam.")
-                return
+        #try:
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            logging.error("Cannot open webcam.")
+            return
 
-            # Prepare video writer if save_path is provided
-            if save_path:
-                fourcc = cv2.VideoWriter_fourcc(*'XVID')
-                fps = cap.get(cv2.CAP_PROP_FPS)
-                if fps == 0:
-                    fps = 30  # Default FPS if unable to get from webcam
-                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                temp_video_path = None
+        # Prepare video writer if save_path is provided
+        if save_path:
+            fourcc = cv2.VideoWriter_fourcc(*'XVID')
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            if fps == 0:
+                fps = 30  # Default FPS if unable to get from webcam
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            temp_video_path = None
 
-                if self.encryption_password:
-                    # Create a temporary video file
-                    temp_video_fd, temp_video_path = tempfile.mkstemp(suffix=".avi")
-                    os.close(temp_video_fd)  # Close the file descriptor as VideoWriter will handle the file
-                    out = cv2.VideoWriter(temp_video_path, fourcc, fps, (width, height))
-                    if not out.isOpened():
-                        logging.error("Failed to open temporary video writer.")
-                        return
-                    logging.info(f"Writing annotated webcam frames to temporary file: {temp_video_path}")
-                else:
-                    # Directly write to the specified save_path
-                    out = cv2.VideoWriter(save_path, fourcc, fps, (width, height))
-                    if not out.isOpened():
-                        logging.error(f"Failed to open video writer for {save_path}.")
-                        return
-                    logging.info(f"Saving annotated webcam video to {save_path}")
+            if self.encryption_password:
+                # Create a temporary video file
+                temp_video_fd, temp_video_path = tempfile.mkstemp(suffix=".avi")
+                os.close(temp_video_fd)  # Close the file descriptor as VideoWriter will handle the file
+                out = cv2.VideoWriter(temp_video_path, fourcc, fps, (width, height))
+                if not out.isOpened():
+                    logging.error("Failed to open temporary video writer.")
+                    return
+                logging.info(f"Writing annotated webcam frames to temporary file: {temp_video_path}")
             else:
-                out = None
+                # Directly write to the specified save_path
+                out = cv2.VideoWriter(save_path, fourcc, fps, (width, height))
+                if not out.isOpened():
+                    logging.error(f"Failed to open video writer for {save_path}.")
+                    return
+                logging.info(f"Saving annotated webcam video to {save_path}")
+        else:
+            out = None
 
-            # Reset performance metrics
-            self.total_detection_time = 0.0
-            self.total_encoding_time = 0.0
-            self.frame_count = 0
-            self.start_time = time.time()
+        # Reset performance metrics
+        self.total_detection_time = 0.0
+        self.total_encoding_time = 0.0
+        self.frame_count = 0
+        self.start_time = time.time()
 
-            try:
-                while True:
-                    ret, frame = cap.read()
-                    if not ret:
-                        logging.error("Failed to grab frame from webcam.")
+        try:
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    logging.error("Failed to grab frame from webcam.")
+                    break
+
+                # Recognize faces with the option to rename labels
+                recognized_faces = self.recognize_faces(frame, rename_label=name)
+
+                # Annotate frame
+                annotated_frame = frame.copy()
+                if annotate:
+                    for face in recognized_faces:
+                        bbox = face['bbox']
+                        label = face['label']
+                        confidence = face['confidence']
+
+                        # Draw bounding box
+                        x, y, w, h = bbox
+                        cv2.rectangle(annotated_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+                        # Put label and confidence
+                        text = f"{label} ({confidence:.2f})"
+                        cv2.putText(annotated_frame, text, (x, y - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+                if self.show:
+                    cv2.imshow('Face Recognition - Webcam', annotated_frame)
+                    # Press 'q' to quit
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        logging.info("User requested to quit webcam processing.")
                         break
 
-                    # Recognize faces with the option to rename labels
-                    recognized_faces = self.recognize_faces(frame, rename_label=name)
-
-                    # Annotate frame
-                    annotated_frame = frame.copy()
-                    if annotate:
-                        for face in recognized_faces:
-                            bbox = face['bbox']
-                            label = face['label']
-                            confidence = face['confidence']
-
-                            # Draw bounding box
-                            x, y, w, h = bbox
-                            cv2.rectangle(annotated_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-
-                            # Put label and confidence
-                            text = f"{label} ({confidence:.2f})"
-                            cv2.putText(annotated_frame, text, (x, y - 10),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-
-                    if self.show:
-                        cv2.imshow('Face Recognition - Webcam', annotated_frame)
-                        # Press 'q' to quit
-                        if cv2.waitKey(1) & 0xFF == ord('q'):
-                            logging.info("User requested to quit webcam processing.")
-                            break
-
-                    if out:
-                        out.write(annotated_frame)
-
-                    # Handle duration
-                    if duration > 0:
-                        elapsed_time = time.time() - self.start_time
-                        if elapsed_time >= duration:
-                            logging.info(f"Duration of {duration} seconds reached. Stopping webcam.")
-                            break
-
-            except KeyboardInterrupt:
-                logging.info("KeyboardInterrupt received. Stopping webcam.")
-            finally:
-                cap.release()
                 if out:
-                    out.release()
-                    if self.encryption_password and temp_video_path:
-                        try:
-                            # Read the temporary video file
-                            with open(temp_video_path, 'rb') as tmp_video:
-                                video_bytes = tmp_video.read()
+                    out.write(annotated_frame)
 
-                            # Encrypt and save to the desired path
-                            self._encrypt_and_write(save_path, video_bytes)
-                            logging.info(f"Encrypted webcam video saved to {save_path}")
+                # Handle duration
+                if duration > 0:
+                    elapsed_time = time.time() - self.start_time
+                    if elapsed_time >= duration:
+                        logging.info(f"Duration of {duration} seconds reached. Stopping webcam.")
+                        break
 
-                            # Remove the temporary file
-                            os.remove(temp_video_path)
-                            logging.info(f"Temporary video file {temp_video_path} removed.")
-                        except Exception as e:
-                            logging.error(f"Error during encryption of webcam video: {e}")
-                    elif not self.encryption_password:
-                        logging.info(f"Annotated webcam video saved to {save_path}")
-                if self.show:
-                    cv2.destroyAllWindows()
+        except KeyboardInterrupt:
+            logging.info("KeyboardInterrupt received. Stopping webcam.")
+        finally:
+            cap.release()
+            if out:
+                out.release()
+                if self.encryption_password and temp_video_path:
+                    try:
+                        # Read the temporary video file
+                        with open(temp_video_path, 'rb') as tmp_video:
+                            video_bytes = tmp_video.read()
 
-                # Calculate performance metrics
-                end_time = time.time()
-                elapsed_time = end_time - self.start_time if self.start_time else 0
-                avg_detection_time = self.total_detection_time / self.frame_count if self.frame_count else 0
-                avg_encoding_time = self.total_encoding_time / self.frame_count if self.frame_count else 0
-                fps = self.frame_count / elapsed_time if elapsed_time > 0 else 0
+                        # Encrypt and save to the desired path
+                        self._encrypt_and_write(save_path, video_bytes)
+                        logging.info(f"Encrypted webcam video saved to {save_path}")
 
-                logging.info(f"Processed {self.frame_count} frames in {elapsed_time:.2f} seconds.")
-                logging.info(f"Average Detection Time: {avg_detection_time * 1000:.2f} ms/frame")
-                logging.info(f"Average Encoding Time: {avg_encoding_time * 1000:.2f} ms/frame")
-                logging.info(f"Pipeline FPS: {fps:.2f}")
+                        # Remove the temporary file
+                        os.remove(temp_video_path)
+                        logging.info(f"Temporary video file {temp_video_path} removed.")
+                    except Exception as e:
+                        logging.error(f"Error during encryption of webcam video: {e}")
+                elif not self.encryption_password:
+                    logging.info(f"Annotated webcam video saved to {save_path}")
+            if self.show:
+                cv2.destroyAllWindows()
 
-        except Exception as e:
-            logging.error(f"Error in process_webcam: {e}")
+            # Calculate performance metrics
+            end_time = time.time()
+            elapsed_time = end_time - self.start_time if self.start_time else 0
+            avg_detection_time = self.total_detection_time / self.frame_count if self.frame_count else 0
+            avg_encoding_time = self.total_encoding_time / self.frame_count if self.frame_count else 0
+            fps = self.frame_count / elapsed_time if elapsed_time > 0 else 0
+
+            logging.info(f"Processed {self.frame_count} frames in {elapsed_time:.2f} seconds.")
+            logging.info(f"Average Detection Time: {avg_detection_time * 1000:.2f} ms/frame")
+            logging.info(f"Average Encoding Time: {avg_encoding_time * 1000:.2f} ms/frame")
+            logging.info(f"Pipeline FPS: {fps:.2f}")
+
+        #except Exception as e:
+            #logging.error(f"Error in process_webcam: {e}")
 
     def close(self):
         """
@@ -1274,15 +1275,15 @@ if __name__ == "__main__":
 
     # Initialize FaceRecognition
     face_recog = FaceRecognition(
-        detector_type='yunet',  # 'mediapipe', 'retinaface', 'yunet', etc.
+        detector_type= 'yunet',  # 'mediapipe', 'retinaface', 'yunet', etc.
         align=True,
         encoder_model_type='128',
         encoder_mode='gpu_optimized',
         similarity_threshold=0.85,  # Adjusted threshold
         enable_logging=args.log,
         show=args.show,
-        unknown_trigger_count=0 if args.mode == "image" else 3,  # Set to 0 for image mode, adjust as needed
-        detection_interval=1 if args.mode == "image" else 7,  # Set to 1 for image mode, adjust as needed
+        unknown_trigger_count=1,#0 if args.mode == "image" else 3,  # Set to 0 for image mode, adjust as needed
+        detection_interval=1 if args.mode == "image" else 3,  # Set to 1 for image mode, adjust as needed
         encryption_password=args.password,  # Pass the encryption password
         hnsw_index_path=args.hnsw_index_path,
         hnsw_labels_path=args.hnsw_labels_path,
