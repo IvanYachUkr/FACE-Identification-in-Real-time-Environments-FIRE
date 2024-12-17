@@ -3,6 +3,13 @@ import os
 import onnxruntime as rt
 import numpy as np
 
+def check_available_providers():
+    """
+    Check and print the available providers for ONNX Runtime.
+    """
+    available_providers = rt.get_available_providers()
+    print("\nAvailable Execution Providers:", available_providers)
+    return available_providers
 
 def load_facenet_model(onnx_model_path="weights/facenet128.onnx", mode="gpu_optimized"):
     """
@@ -16,6 +23,9 @@ def load_facenet_model(onnx_model_path="weights/facenet128.onnx", mode="gpu_opti
     Returns:
         session (InferenceSession): ONNX Runtime session for the loaded model.
     """
+    # Check providers before loading the model
+    available_providers = check_available_providers()
+
     # Get the directory of the current script file
     base_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -49,11 +59,19 @@ def load_facenet_model(onnx_model_path="weights/facenet128.onnx", mode="gpu_opti
         case _:
             raise ValueError(f"Invalid mode selected: {mode}. Choose from 'gpu', 'gpu_optimized', 'cpu', 'cpu_optimized', 'npu', 'npu_optimized'.")
 
+    # Validate if the desired provider is available
+    if not any(provider in available_providers for provider in providers):
+        raise ValueError(
+            f"None of the desired providers {providers} are available on this system. "
+            f"Available providers are: {available_providers}"
+        )
+
     # Load the ONNX model into an inference session
     try:
-        print(f"\n\nLoading ONNX model from {full_onnx_path}...\n\n")
+        print(f"\nLoading ONNX model from {full_onnx_path}...\n")
         session = rt.InferenceSession(full_onnx_path, sess_options=session_options, providers=providers)
-        print("\n\nONNX model successfully loaded.\n\n")
+        print("\nONNX model successfully loaded.\n")
+        print("Using Execution Providers:", session.get_providers())
     except Exception as err:
         raise ValueError(
             f"An error occurred while loading the ONNX model from {full_onnx_path}. "

@@ -10,7 +10,7 @@ import logging
 mp_face_detection = None
 mp_drawing = mp.solutions.drawing_utils
 
-def detect_faces(image: np.ndarray, conf_threshold: float = 0.5,
+def detect_faces(image: np.ndarray, conf_threshold: float = 0.85,
                 model_selection: int = 1) -> List[Dict[str, Any]]:
     """
     Detect faces in an image using Mediapipe Face Detection.
