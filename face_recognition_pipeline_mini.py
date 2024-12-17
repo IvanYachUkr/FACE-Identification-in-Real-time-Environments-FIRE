@@ -41,8 +41,11 @@ class FaceRecognition:
                  max_new: int = 250,
                  sqlite_db_path: str = None,
                  sqlite_db_encrypted_path: str = None,
-                 encryption_password: str = None):
-
+                 encryption_password: str = None,
+                 interested_label: str = None):
+        """
+        :param interested_label: If set, only this label will be maintained/tracked in recognition results.
+        """
         self.encoder_model_type = encoder_model_type
         self.detector_type = detector_type.lower()
         self.align = align
@@ -53,6 +56,9 @@ class FaceRecognition:
         self.show = show
         self.detection_interval = detection_interval
         self.frame_index = 0
+
+        # New attribute to filter recognition results for a specific label of interest
+        self.interested_label = interested_label
 
         if self.enable_logging:
             logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -369,8 +375,6 @@ class FaceRecognition:
                 if self.hnsw_index.get_current_count() > 0:
                     labels, distances = self.hnsw_index.knn_query(embedding, k=1)
                     if labels.size > 0:
-                        # For cosine space: distances are cosine distances = 1 - similarity
-                        # So similarity = 1 - distance
                         cosine_similarity = 1 - distances[0][0]
                         if cosine_similarity > self.similarity_threshold:
                             logging.info(
@@ -450,6 +454,7 @@ class FaceRecognition:
 
         self.frame_index += 1
 
+        # Only run face detection every self.detection_interval frames
         if (self.frame_index % self.detection_interval == 0):
             start_detection = time.time()
             detected_faces = self.detect_faces(image)
@@ -459,14 +464,14 @@ class FaceRecognition:
             formatted_detections = []
             for bbox_dict in detected_faces:
                 bbox = bbox_dict.get('bbox', [0, 0, 0, 0])
-                #confidence = bbox_dict.get('confidence', 1.0)
-                formatted_detections.append({'bbox': bbox})#, 'confidence': confidence})
+                detection_confidence = bbox_dict.get('confidence', 1.0)
+                formatted_detections.append({'bbox': bbox, 'confidence': detection_confidence})
 
             tracks = self.face_tracker.update(formatted_detections)
-
         else:
             tracks = self.face_tracker.update([])
 
+        # Clean up inactive track IDs
         active_track_ids = set([trk['id'] for trk in tracks])
         inactive_track_ids = set(self.track_id_to_label.keys()) - active_track_ids
         for track_id in inactive_track_ids:
@@ -474,6 +479,7 @@ class FaceRecognition:
             if track_id in self.unknown_faces:
                 del self.unknown_faces[track_id]
 
+        # Process each track
         for trk in tracks:
             track_id = trk['id']
             bbox = trk['bbox']
@@ -519,6 +525,7 @@ class FaceRecognition:
                 label = "Unknown"
                 confidence = 0.0
 
+                # Check recent embeddings first
                 if self.recent_embeddings.shape[0] > 0:
                     similarities = np.dot(self.recent_embeddings, embedding.T).flatten()
                     max_similarity = np.max(similarities)
@@ -527,6 +534,7 @@ class FaceRecognition:
                         label = self.recent_labels[max_index]
                         confidence = float(max_similarity)
 
+                # Query HNSW index if still unknown
                 if label == "Unknown":
                     if self.hnsw_index.get_current_count() > 0:
                         labels, distances = self.hnsw_index.knn_query(embedding, k=1)
@@ -536,11 +544,11 @@ class FaceRecognition:
                                 hnsw_id = labels[0][0]
                                 label = self.hnsw_labels[hnsw_id]
                                 confidence = float(cosine_similarity)
-
                                 if rename_label:
                                     self.update_label(hnsw_id, rename_label)
                                     label = rename_label
 
+                # Handle unknown logic
                 if label == "Unknown":
                     label = self._handle_unknown_embedding(track_id, embedding, rename_label)
                     confidence = 1.0
@@ -548,9 +556,13 @@ class FaceRecognition:
                 self.track_id_to_label[track_id] = label
                 self._add_to_recent_embeddings(embedding, label)
 
+            # NEW FILTERING: If there's an interested_label set, ignore faces not matching it
+            if self.interested_label is not None and label != self.interested_label:
+                continue
+
             results.append({
                 'label': self.track_id_to_label[track_id],
-                #'confidence': float(confidence),
+                'confidence': float(confidence),
                 'bbox': bbox
             })
 
@@ -640,10 +652,9 @@ class FaceRecognition:
         except Exception as e:
             logging.error(f"Error updating label: {e}")
 
-    #
-    def process_image(self, image_path: str, annotate: bool = True, save_path: str = None):
+    def process_image(self, image_path: str, annotate: bool = True, save_path: str = None, label: str = None):
         try:
-            timing = {}  # Dictionary to store timing information
+            timing = {}
 
             # Step 1: Read the Image
             start_time = time.time()
@@ -664,136 +675,211 @@ class FaceRecognition:
             new_embeddings_to_add = []
             new_labels_to_add = []
 
-            for face_data in detected_faces:
-                # Extract bounding box
-                bbox = face_data.get('bbox', [0, 0, 0, 0])
-                x, y, w, h = bbox
-                x = max(x, 0)
-                y = max(y, 0)
-                w = max(w, 0)
-                h = max(h, 0)
-
-                if w == 0 or h == 0:
-                    logging.warning("Detected face with zero width or height.")
-                    continue
-
-                # Step 3: Extract Face Image
-                start_time = time.time()
-                face_img = image[y:y + h, x:x + w]
-                if face_img.size == 0:
-                    logging.warning("Extracted face image is empty, skipping.")
-                    continue
-                timing_face_extraction = time.time() - start_time
-
-                # Step 4: Preprocess for Encoder
-                start_time = time.time()
-                preprocessed_face = self._preprocess_for_encoder(face_img)
-                timing_preprocessing = time.time() - start_time
-
-                # Step 5: Encode the Face
-                start_time = time.time()
-                embedding = self.encoder(preprocessed_face)
-                encoding_time = time.time() - start_time
-                self.total_encoding_time += encoding_time
-                timing['Face Encoding'] = timing.get('Face Encoding', 0) + encoding_time
-
-                if embedding.ndim > 1:
-                    embedding = embedding.squeeze()
-                norm = np.linalg.norm(embedding)
-                if norm == 0:
-                    logging.error("Received zero vector from encoder. Skipping this face.")
-                    continue
-                embedding = embedding / norm
-
-                # Debug: Print the embedding
-                # print(f"Embedding for face at [{x}, {y}, {w}, {h}]: {embedding}")
-
-                # Step 6: Attempt Recognition using HNSW Index
-                start_time = time.time()
-                label = None
-                confidence = 0.0
-                if self.hnsw_index.get_current_count() > 0:
-                    labels, distances = self.hnsw_index.knn_query(embedding, k=1)
-                    if labels.size > 0:
-                        cosine_similarity = 1 - distances[0][0]
-                        if cosine_similarity > self.similarity_threshold:
-                            hnsw_id = labels[0][0]
-                            label = self.hnsw_labels[hnsw_id]
-                            confidence = float(cosine_similarity)
-                timing['Face Recognition'] = timing.get('Face Recognition', 0) + (time.time() - start_time)
-
-                # Step 7: Handle Unknown Faces
-                start_time = time.time()
-                if label is None:
-                    unique_label = self._generate_unique_label()
-                    label = unique_label
-                    new_embeddings_to_add.append(embedding)
-                    new_labels_to_add.append(label)
-                timing['Unknown Handling'] = time.time() - start_time
-
-                # Step 8: Append Recognized Face
-                recognized_faces.append({
-                    'label': label,
-                    'bbox': bbox
-                })
-
-            # Step 9: Flush New Embeddings to DB and Index
-            start_time = time.time()
-            if new_embeddings_to_add:
-                for label, embedding in zip(new_labels_to_add, new_embeddings_to_add):
-                    db_id = self._add_to_sqlite(label, embedding)
-                    if db_id != -1:
-                        if self.hnsw_id_counter < 100000:
-                            self.hnsw_index.add_items(embedding, self.hnsw_id_counter)
-                            self.hnsw_labels.append(label)
-                            self.hnsw_db_ids.append(db_id)
-                            logging.info(f"Added '{label}' to HNSWlib index with hnsw_id {self.hnsw_id_counter}.")
-                            self.hnsw_id_counter += 1
-                        else:
-                            logging.warning(
-                                "HNSWlib index has reached its maximum capacity, cannot add more embeddings.")
-                self._save_hnswlib_index()
-            timing['Flushing Embeddings'] = time.time() - start_time
-
-            # Step 10: Annotate the Image
-            start_time = time.time()
-            annotated_image = image.copy()
-            if annotate:
-                for face in recognized_faces:
-                    bbox = face['bbox']
-                    label = face['label']
-
+            if label:
+                # If label is provided, update existing embeddings with this label
+                for face_data in detected_faces:
+                    bbox = face_data.get('bbox', [0, 0, 0, 0])
                     x, y, w, h = bbox
-                    cv2.rectangle(annotated_image, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                    text = f"{label}"
-                    cv2.putText(annotated_image, text, (x, y - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-            timing['Image Annotation'] = time.time() - start_time
+                    x = max(x, 0)
+                    y = max(y, 0)
+                    w = max(w, 0)
+                    h = max(h, 0)
 
-            # Step 11: Display the Image (Optional)
-            if self.show:
-                cv2.imshow('Face Recognition - Image', annotated_image)
-                cv2.waitKey(0)
-                cv2.destroyAllWindows()
+                    if w == 0 or h == 0:
+                        logging.warning("Detected face with zero width or height.")
+                        continue
 
-            # Step 12: Save the Annotated Image
-            start_time = time.time()
-            if save_path:
-                if self.encryption_password:
-                    _, buffer = cv2.imencode('.jpg', annotated_image)
-                    image_bytes = buffer.tobytes()
-                    self._encrypt_and_write(save_path, image_bytes)
-                else:
-                    cv2.imwrite(save_path, annotated_image)
-                    logging.info(f"Annotated image saved to {save_path}")
-            timing['Image Saving'] = time.time() - start_time
+                    # Extract Face Image
+                    start_time = time.time()
+                    face_img = image[y:y + h, x:x + w]
+                    if face_img.size == 0:
+                        logging.warning("Extracted face image is empty, skipping.")
+                        continue
+                    timing_face_extraction = time.time() - start_time
 
-            # Step 13: Print Timing Results
-            total_time = sum(timing.values())
-            print("\n--- Image Processing Timings ---")
-            for step, duration in timing.items():
-                print(f"{step}: {duration:.4f} seconds")
-            print(f"Total Processing Time: {total_time:.4f} seconds\n")
+                    # Preprocess for Encoder
+                    start_time = time.time()
+                    try:
+                        preprocessed_face = self._preprocess_for_encoder(face_img)
+                    except Exception as e:
+                        logging.error(f"Error preprocessing face: {e}")
+                        continue
+                    timing_preprocessing = time.time() - start_time
+
+                    # Encode the Face
+                    start_time = time.time()
+                    embedding = self.encoder(preprocessed_face)
+                    encoding_time = time.time() - start_time
+                    self.total_encoding_time += encoding_time
+                    timing['Face Encoding'] = timing.get('Face Encoding', 0) + encoding_time
+
+                    if embedding.ndim > 1:
+                        embedding = embedding.squeeze()
+                    norm = np.linalg.norm(embedding)
+                    if norm == 0:
+                        logging.error("Received zero vector from encoder. Skipping this face.")
+                        continue
+                    embedding = embedding / norm
+
+                    # Attempt to find matching embeddings
+                    matched = False
+                    if self.hnsw_index.get_current_count() > 0:
+                        labels, distances = self.hnsw_index.knn_query(embedding, k=1)
+                        if labels.size > 0:
+                            cosine_similarity = 1 - distances[0][0]
+                            if cosine_similarity > self.similarity_threshold:
+                                hnsw_id = labels[0][0]
+                                self.update_label(hnsw_id, label)
+                                logging.info(f"Updated label for hnsw_id {hnsw_id} to '{label}'.")
+                                matched = True
+
+                    if not matched:
+                        logging.warning("No matching face found to update with the provided label.")
+
+                # Save and annotate if needed
+                if save_path:
+                    if self.encryption_password:
+                        _, buffer = cv2.imencode('.jpg', image)
+                        image_bytes = buffer.tobytes()
+                        self._encrypt_and_write(save_path, image_bytes)
+                    else:
+                        cv2.imwrite(save_path, image)
+                        logging.info(f"Processed image saved to {save_path}")
+
+                print("\n--- Image Processing Timings ---")
+                for step, duration in timing.items():
+                    print(f"{step}: {duration:.4f} seconds")
+                total_time = sum(timing.values())
+                print(f"Total Processing Time: {total_time:.4f} seconds\n")
+
+            else:
+                # If no label is provided, perform standard recognition and annotation
+                for face_data in detected_faces:
+                    bbox = face_data.get('bbox', [0, 0, 0, 0])
+                    x, y, w, h = bbox
+                    x = max(x, 0)
+                    y = max(y, 0)
+                    w = max(w, 0)
+                    h = max(h, 0)
+
+                    if w == 0 or h == 0:
+                        logging.warning("Detected face with zero width or height.")
+                        continue
+
+                    # Extract Face Image
+                    start_time = time.time()
+                    face_img = image[y:y + h, x:x + w]
+                    if face_img.size == 0:
+                        logging.warning("Extracted face image is empty, skipping.")
+                        continue
+                    timing_face_extraction = time.time() - start_time
+
+                    # Preprocess for Encoder
+                    start_time = time.time()
+                    try:
+                        preprocessed_face = self._preprocess_for_encoder(face_img)
+                    except Exception as e:
+                        logging.error(f"Error preprocessing face: {e}")
+                        continue
+                    timing_preprocessing = time.time() - start_time
+
+                    # Encode the Face
+                    start_time = time.time()
+                    embedding = self.encoder(preprocessed_face)
+                    encoding_time = time.time() - start_time
+                    self.total_encoding_time += encoding_time
+                    timing['Face Encoding'] = timing.get('Face Encoding', 0) + encoding_time
+
+                    if embedding.ndim > 1:
+                        embedding = embedding.squeeze()
+                    norm = np.linalg.norm(embedding)
+                    if norm == 0:
+                        logging.error("Received zero vector from encoder. Skipping this face.")
+                        continue
+                    embedding = embedding / norm
+
+                    # Attempt Recognition using HNSW Index
+                    start_time = time.time()
+                    label_found = None
+                    confidence = 0.0
+                    if self.hnsw_index.get_current_count() > 0:
+                        labels, distances = self.hnsw_index.knn_query(embedding, k=1)
+                        if labels.size > 0:
+                            cosine_similarity = 1 - distances[0][0]
+                            if cosine_similarity > self.similarity_threshold:
+                                hnsw_id = labels[0][0]
+                                label_found = self.hnsw_labels[hnsw_id]
+                                confidence = float(cosine_similarity)
+                    timing['Face Recognition'] = timing.get('Face Recognition', 0) + (time.time() - start_time)
+
+                    # Handle Unknown Faces
+                    start_time = time.time()
+                    if label_found is None:
+                        unique_label = self._generate_unique_label()
+                        label_found = unique_label
+                        new_embeddings_to_add.append(embedding)
+                        new_labels_to_add.append(label_found)
+                    timing['Unknown Handling'] = time.time() - start_time
+
+                    recognized_faces.append({
+                        'label': label_found,
+                        'bbox': bbox
+                    })
+
+                # Step 9: Flush New Embeddings
+                start_time = time.time()
+                if new_embeddings_to_add:
+                    for label, emb in zip(new_labels_to_add, new_embeddings_to_add):
+                        db_id = self._add_to_sqlite(label, emb)
+                        if db_id != -1:
+                            if self.hnsw_id_counter < 100000:
+                                self.hnsw_index.add_items(emb, self.hnsw_id_counter)
+                                self.hnsw_labels.append(label)
+                                self.hnsw_db_ids.append(db_id)
+                                logging.info(f"Added '{label}' to HNSWlib index with hnsw_id {self.hnsw_id_counter}.")
+                                self.hnsw_id_counter += 1
+                            else:
+                                logging.warning("HNSWlib index has reached its maximum capacity, cannot add more embeddings.")
+                    self._save_hnswlib_index()
+                timing['Flushing Embeddings'] = time.time() - start_time
+
+                # Step 10: Annotate the Image
+                start_time = time.time()
+                annotated_image = image.copy()
+                if annotate:
+                    for face in recognized_faces:
+                        bbox = face['bbox']
+                        label = face['label']
+                        x, y, w, h = bbox
+                        cv2.rectangle(annotated_image, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                        text = f"{label}"
+                        cv2.putText(annotated_image, text, (x, y - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                timing['Image Annotation'] = time.time() - start_time
+
+                # Step 11: Display the Image (Optional)
+                if self.show:
+                    cv2.imshow('Face Recognition - Image', annotated_image)
+                    cv2.waitKey(0)
+                    cv2.destroyAllWindows()
+
+                # Step 12: Save the Annotated Image
+                start_time = time.time()
+                if save_path:
+                    if self.encryption_password:
+                        _, buffer = cv2.imencode('.jpg', annotated_image)
+                        image_bytes = buffer.tobytes()
+                        self._encrypt_and_write(save_path, image_bytes)
+                    else:
+                        cv2.imwrite(save_path, annotated_image)
+                        logging.info(f"Annotated image saved to {save_path}")
+                timing['Image Saving'] = time.time() - start_time
+
+                total_time = sum(timing.values())
+                print("\n--- Image Processing Timings ---")
+                for step, duration in timing.items():
+                    print(f"{step}: {duration:.4f} seconds")
+                print(f"Total Processing Time: {total_time:.4f} seconds\n")
 
         except Exception as e:
             logging.error(f"Error in process_image: {e}")
@@ -848,12 +934,11 @@ class FaceRecognition:
                     for face in recognized_faces:
                         bbox = face['bbox']
                         label = face['label']
-                        #confidence = face['confidence']
-
-                        x, y, w, h = bbox
-                        cv2.rectangle(annotated_frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
-                        text = f"{label}" # ({confidence:.2f})"
-                        cv2.putText(annotated_frame, text, (x, y - 10),
+                        confidence = face['confidence']
+                        cv2.rectangle(annotated_frame, (bbox[0], bbox[1]), (bbox[0] + bbox[2], bbox[1] + bbox[3]),
+                                      (255, 0, 0), 2)
+                        text = f"{label} ({confidence:.2f})"
+                        cv2.putText(annotated_frame, text, (bbox[0], bbox[1] - 10),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
 
                 if self.show:
@@ -949,12 +1034,11 @@ class FaceRecognition:
                     for face in recognized_faces:
                         bbox = face['bbox']
                         label = face['label']
-                        # confidence = face['confidence']
-
-                        x, y, w, h = bbox
-                        cv2.rectangle(annotated_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                        text = f"{label}" # ({confidence:.2f})"
-                        cv2.putText(annotated_frame, text, (x, y - 10),
+                        confidence = face['confidence']
+                        cv2.rectangle(annotated_frame, (bbox[0], bbox[1]), (bbox[0] + bbox[2], bbox[1] + bbox[3]),
+                                      (0, 255, 0), 2)
+                        text = f"{label} ({confidence:.2f})"
+                        cv2.putText(annotated_frame, text, (bbox[0], bbox[1] - 10),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
                 if self.show:
@@ -1083,6 +1167,10 @@ if __name__ == "__main__":
     parser.add_argument('--sqlite_db_encrypted_path', type=str, default=None,
                         help='Custom path for the encrypted SQLite database file')
 
+    # New argument to set the interested label
+    parser.add_argument('--interested_label', type=str, default=None,
+                        help='If set, only faces with this label will be recognized/maintained')
+
     args = parser.parse_args()
 
     face_recog = FaceRecognition(
@@ -1090,7 +1178,7 @@ if __name__ == "__main__":
         align=True,
         encoder_model_type=args.encoder,
         encoder_mode='gpu',
-        similarity_threshold=0.85,
+        similarity_threshold=0.74,
         enable_logging=args.log,
         show=args.show,
         unknown_trigger_count=1,
@@ -1100,7 +1188,8 @@ if __name__ == "__main__":
         hnsw_labels_path=args.hnsw_labels_path,
         hnsw_db_ids_path=args.hnsw_db_ids_path,
         sqlite_db_path=args.sqlite_db_path,
-        sqlite_db_encrypted_path=args.sqlite_db_encrypted_path
+        sqlite_db_encrypted_path=args.sqlite_db_encrypted_path,
+        interested_label=args.interested_label
     )
 
     if args.core:
@@ -1110,26 +1199,29 @@ if __name__ == "__main__":
     if args.mode == 'image':
         if args.input is None:
             logging.error("Please provide the path to the input image using --input")
-        elif args.label is not None:
-            image = cv2.imread(args.input)
-            if image is not None:
-                success = face_recog.add_face(image, args.label)
-                if success:
-                    logging.info(f"Successfully added face with label '{args.label}'.")
-                else:
-                    logging.warning("Failed to add face.")
-            else:
-                logging.error(f"Failed to load image from {args.input}")
         else:
-            face_recog.process_image(args.input, annotate=args.annotate, save_path=args.save)
+            face_recog.process_image(
+                image_path=args.input,
+                annotate=args.annotate,
+                save_path=args.save,
+                label=args.label
+            )
 
     elif args.mode == 'video':
         if args.input is None:
             logging.error("Please provide the path to the input video using --input")
         else:
-            face_recog.process_video(args.input, annotate=args.annotate, save_path=args.save)
+            face_recog.process_video(
+                video_path=args.input,
+                annotate=args.annotate,
+                save_path=args.save
+            )
 
     elif args.mode == 'webcam':
-        face_recog.process_webcam(annotate=args.annotate, save_path=args.save, name=args.label)
+        face_recog.process_webcam(
+            annotate=args.annotate,
+            save_path=args.save,
+            name=args.label
+        )
 
     face_recog.close()
