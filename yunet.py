@@ -4,8 +4,6 @@
 # Copyright (C) 2021, Shenzhen Institute of Artificial Intelligence and Robotics for Society, all rights reserved.
 # Third party copyrights are property of their respective owners.
 
-from itertools import product
-
 import numpy as np
 import cv2 as cv
 
