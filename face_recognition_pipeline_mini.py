@@ -18,7 +18,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.fernet import Fernet
-
+import ctypes
 
 class FaceRecognition:
     def __init__(self,
@@ -884,6 +884,43 @@ class FaceRecognition:
         except Exception as e:
             logging.error(f"Error in process_image: {e}")
 
+    def resize_frame_to_screen(self, frame):
+        """
+        Resize the input frame to fit within the current screen resolution while maintaining the aspect ratio.
+
+        Parameters:
+        frame (numpy.ndarray): The input frame to be resized.
+
+        Returns:
+        numpy.ndarray: The resized frame.
+        """
+        # Get the screen resolution
+        user32 = ctypes.windll.user32
+        screen_width = user32.GetSystemMetrics(0)
+        screen_height = user32.GetSystemMetrics(1)
+
+        # Get the original dimensions of the frame
+        original_height, original_width = frame.shape[:2]
+
+        # Calculate the aspect ratios
+        frame_aspect_ratio = original_width / original_height
+        screen_aspect_ratio = screen_width / screen_height
+
+        # Determine the resizing dimensions
+        if frame_aspect_ratio > screen_aspect_ratio:
+            # Fit by width
+            new_width = screen_width
+            new_height = int(screen_width / frame_aspect_ratio)
+        else:
+            # Fit by height
+            new_height = screen_height
+            new_width = int(screen_height * frame_aspect_ratio)
+
+        # Resize the frame
+        resized_frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
+
+        return resized_frame
+
     def process_video(self, video_path: str, annotate: bool = True, save_path: str = None):
         try:
             cap = cv2.VideoCapture(video_path)
@@ -927,6 +964,9 @@ class FaceRecognition:
                 if not ret:
                     break
 
+                if self.show:
+                    frame = self.resize_frame_to_screen(frame)
+
                 recognized_faces = self.recognize_faces(frame)
 
                 annotated_frame = frame.copy()
@@ -943,6 +983,7 @@ class FaceRecognition:
 
                 if self.show:
                     cv2.imshow('Face Recognition - Video', annotated_frame)
+
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         logging.info("User requested to quit video processing.")
                         break
@@ -1177,7 +1218,7 @@ if __name__ == "__main__":
         detector_type=args.detector,
         align=True,
         encoder_model_type=args.encoder,
-        encoder_mode='gpu',
+        encoder_mode='cpu_optimized',
         similarity_threshold=0.74,
         enable_logging=args.log,
         show=args.show,
