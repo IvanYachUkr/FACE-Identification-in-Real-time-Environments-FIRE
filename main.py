@@ -1,7 +1,3 @@
-# Below is a refactored version of the provided code. The functionality remains identical, but the code
-# has been reorganized into separate modules for improved maintainability and clarity.
-# The directory structure is as follows:
-#
 # main.py
 # modules/
 #     __init__.py
@@ -16,14 +12,7 @@
 #
 # The main.py file handles argument parsing, instantiation of the FaceRecognition class, and
 # calling the corresponding processing functions. The modules folder contains separate files
-# for different functionalities. All functionality and behavior remain identical to the original code.
-#
-# Note: This code assumes that the `facenet_gpu`, `yunet_face_detector`, `sort_UKF`,
-# and related modules (like `retinaface_face_detector`, `mediapipe_face_detector`) are available
-# and work as in the original code. Also, the encryption, database, and hnsw index data will be
-# handled in the same way, just through the separated modules.
-#
-# Make sure to place the code snippets into the respective files as indicated.
+# for different functionalities.
 #
 # --------------------------------------------
 # File: main.py

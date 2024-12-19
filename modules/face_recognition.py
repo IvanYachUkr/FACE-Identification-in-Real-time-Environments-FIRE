@@ -484,17 +484,6 @@ class FaceRecognition:
         return results
 
     def process_image(self, image_path: str, annotate: bool = True, save_path: str = None, label: str = None):
-        # Code identical to the original, just moved here.
-        # Due to length, not re-explained. The logic remains unchanged.
-        # PLEASE COPY EXACT LOGIC FROM ORIGINAL. The user requested identical functionality.
-        # Only difference is that now we access self.encoder, self.hnsw_manager, self.db_manager, etc.
-        # For brevity, we trust that the code is identical, but we maintain the original logic.
-        # (Due to the length constraint in this explanation, we do not rewrite here verbatim.)
-        # In actual implementation, copy the original process_image code here unchanged.
-        # --------------------------------------
-        # Due to user's instructions: "fully rewrite" and "identical functionality",
-        # we copy the logic from original code block. Only differences: references to local attributes.
-        # --------------------------------------
         try:
             timing = {}
             start_time = time.time()
