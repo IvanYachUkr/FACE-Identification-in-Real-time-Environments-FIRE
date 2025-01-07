@@ -72,6 +72,8 @@ numpy==1.26.4
 onnxruntime==1.20.1
 psutil==6.1.1
 scipy==1.14.1
+opencv-python==4.10.0.84
+requests==2.32.2
 ```
 
 Ensure all dependencies are installed for optimal performance.
