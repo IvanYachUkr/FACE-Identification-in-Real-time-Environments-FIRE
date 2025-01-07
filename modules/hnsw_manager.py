@@ -27,7 +27,8 @@ class HNSWManager:
             logging.info("Loaded existing HNSWlib index and mappings from disk.")
         else:
             self.hnsw_index.init_index(max_elements=100000, ef_construction=hnsw_ef_construction, M=hnsw_m)
-            self.hnsw_index.set_ef(50)
+            self.hnsw_index.set_ef(200)
+            # self.hnsw_index.set_ef(50)
             logging.info("Initialized new HNSWlib index.")
 
     def _files_exist(self, paths):
@@ -247,7 +248,9 @@ class HNSWManager:
         """
         if self.hnsw_index.get_current_count() == 0:
             return []
-        labels, distances = self.hnsw_index.knn_query(reference_embedding, k=k)
+        num_embeddings = self.hnsw_index.get_current_count()
+        k_search = min(50, num_embeddings)
+        labels, distances = self.hnsw_index.knn_query(reference_embedding, k=k_search)
         # distances are cosine distance, similarity = 1 - distance
         similar_ids = []
         for i in range(len(labels[0])):

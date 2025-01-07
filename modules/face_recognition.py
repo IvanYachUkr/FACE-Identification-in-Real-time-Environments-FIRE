@@ -247,13 +247,8 @@ class FaceRecognition:
             self.recent_embeddings = self.recent_embeddings[1:]
             self.recent_labels.pop(0)
 
-    def update_label(self, hnsw_id: int, new_label: str):
-        self.hnsw_manager.update_label(hnsw_id, new_label, self.db_manager.cursor, self.db_manager.conn)
 
     def update_label(self, hnsw_id: int, new_label: str):
-        """
-        Overridden to now attempt to unify all similar embeddings, not just one.
-        """
         self.hnsw_manager.update_label(hnsw_id, new_label, self.db_manager.cursor, self.db_manager.conn,
                                        similarity_threshold=self.similarity_threshold)
 

@@ -14,7 +14,7 @@ class Encryptor:
     def __init__(self, encryption_password: str):
         self.encryption_password = encryption_password
         self.backend = default_backend()
-        self.iterations = 100000
+        self.iterations = 610000
         self.key_length = 32
 
     def _derive_key(self, password: str, salt: bytes) -> bytes:

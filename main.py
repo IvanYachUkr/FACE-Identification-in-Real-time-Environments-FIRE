@@ -45,7 +45,7 @@ if __name__ == "__main__":
     parser.add_argument('--encoder', type=str, default=None,
                         choices=["128", "512"],
                         help='Encoder type: "128" for Facenet 128 and "512" for Facenet 512')
-    parser.add_argument('--detection_interval', type=int, default=4,
+    parser.add_argument('--detection_interval', type=int, default=1,
                         help='Number of frames to skip for face detection, use 1 for images')
     parser.add_argument('--core', type=int, default=0,
                         help='0 use all cores, 1 use 1 core')
