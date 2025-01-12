@@ -1,5 +1,5 @@
 # Face Recognition System Implementation
-
+![FIRE Logo](assets/logo_fire.png) 
 ## Overview
 
 This project focuses on the development of a Python-based, real-time face recognition system designed for dynamic environments, particularly in robotics. The pipeline includes:
@@ -144,3 +144,12 @@ For additional help, use:
 python main.py --help
 ```
 
+## License
+
+### Source Code
+The FIRE project source code is licensed under the [MIT License](LICENSE).
+
+### Logo
+The FIRE project logo (`assets/logo.png`) is **not** covered by the MIT License.  
+It is the exclusive property of Ivan Iachnyk © 2025.  
+Redistribution, modification, or commercial use of the logo is strictly prohibited without explicit permission.
