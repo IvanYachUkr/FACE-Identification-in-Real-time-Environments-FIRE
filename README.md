@@ -1,5 +1,5 @@
 # Face Recognition System Implementation
-![FIRE Logo](assets/logo_fire.png) 
+![FIRE Logo](assets/logo_fire.PNG) 
 ## Overview
 
 This project focuses on the development of a Python-based, real-time face recognition system designed for dynamic environments, particularly in robotics. The pipeline includes:
