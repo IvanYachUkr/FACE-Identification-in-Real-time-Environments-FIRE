@@ -114,10 +114,10 @@ def rotate_facial_area(
     # Angle in radians
     angle = angle * np.pi / 180
 
-    height, weight = size
+    width, height = size
 
     # Translate the facial area to the center of the image
-    x = (facial_area[0] + facial_area[2]) / 2 - weight / 2
+    x = (facial_area[0] + facial_area[2]) / 2 - width / 2
     y = (facial_area[1] + facial_area[3]) / 2 - height / 2
 
     # Rotate the facial area
@@ -125,7 +125,7 @@ def rotate_facial_area(
     y_new = -x * direction * np.sin(angle) + y * np.cos(angle)
 
     # Translate the facial area back to the original position
-    x_new = x_new + weight / 2
+    x_new = x_new + width / 2
     y_new = y_new + height / 2
 
     # Calculate projected coordinates after alignment
@@ -137,7 +137,7 @@ def rotate_facial_area(
     # validate projected coordinates are in image's boundaries
     x1 = max(int(x1), 0)
     y1 = max(int(y1), 0)
-    x2 = min(int(x2), weight)
+    x2 = min(int(x2), width)
     y2 = min(int(y2), height)
 
     return (x1, y1, x2, y2)
