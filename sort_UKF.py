@@ -115,7 +115,6 @@ class Track:
         ])
 
         # Measurement noise covariance matrix
-        # self.ukf.R = np.diag([10.0, 10.0, 15.0, 15.0])  # [cx, cy, log_s, log_r]
         self.ukf.R = np.eye(4) * 10
         # Initialize state with the first bounding box, using log(s) and log(r)
         x, y, w, h = bbox

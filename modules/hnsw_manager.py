@@ -28,7 +28,6 @@ class HNSWManager:
         else:
             self.hnsw_index.init_index(max_elements=100000, ef_construction=hnsw_ef_construction, M=hnsw_m)
             self.hnsw_index.set_ef(200)
-            # self.hnsw_index.set_ef(50)
             logging.info("Initialized new HNSWlib index.")
 
     def _files_exist(self, paths):
@@ -148,21 +147,6 @@ class HNSWManager:
             labels, distances = self.hnsw_index.knn_query(embedding, k=k)
             return labels, distances
         return None, None
-
-    # def update_label(self, hnsw_id: int, new_label: str, db_cursor, db_conn):
-    #     try:
-    #         if hnsw_id < 0 or hnsw_id >= len(self.hnsw_db_ids):
-    #             logging.error("Invalid hnsw_id for update_label.")
-    #             return
-    #         db_id = self.hnsw_db_ids[hnsw_id]
-    #         self.hnsw_labels[hnsw_id] = new_label
-    #         db_cursor.execute('UPDATE faces SET label = ? WHERE id = ?', (new_label, db_id))
-    #         db_conn.commit()
-    #         logging.info(f"Updated label for hnsw_id {hnsw_id} (db_id {db_id}) to '{new_label}'.")
-    #         self.save_hnswlib_index()
-    #     except Exception as e:
-    #         logging.error(f"Error updating label: {e}")
-
 
     def update_label(self, hnsw_id: int, new_label: str, db_cursor, db_conn, similarity_threshold: float = 0.7):
         """
