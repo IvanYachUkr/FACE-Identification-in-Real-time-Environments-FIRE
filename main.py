@@ -45,6 +45,11 @@ if __name__ == "__main__":
     parser.add_argument('--encoder', type=str, default=None,
                         choices=["128", "512"],
                         help='Encoder type: "128" for Facenet 128 and "512" for Facenet 512')
+    parser.add_argument('--encoder_mode', type=str, default="cpu_optimized",
+                        choices=["cpu_optimized", "gpu_optimized"],
+                        help='Encoder mode: cpu_optimized or gpu_optimized')
+    parser.add_argument('--align', action='store_true',
+                        help='Enable face alignment')
     parser.add_argument('--detection_interval', type=int, default=1,
                         help='Number of frames to skip for face detection, use 1 for images')
     parser.add_argument('--core', type=int, default=0,
@@ -74,9 +79,9 @@ if __name__ == "__main__":
 
     face_recog = FaceRecognition(
         detector_type=args.detector,
-        align=False,
+        align=args.align,
         encoder_model_type=args.encoder,
-        encoder_mode='cpu_optimized',
+        encoder_mode=args.encoder_mode,
         similarity_threshold=0.7,
         enable_logging=args.log,
         show=args.show,

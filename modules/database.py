@@ -17,28 +17,36 @@ class DatabaseManager:
         self.encoder_model_type = encoder_model_type
         self.conn = None
         self.cursor = None
-        self.sqlite_temp_path = None
         self._initialize_sqlite()
 
     def _initialize_sqlite(self):
         if self.encryptor and self.sqlite_db_encrypted_path:
+            self.conn = sqlite3.connect(':memory:')
+            logging.info("Initialized in-memory SQLite database.")
             if os.path.exists(self.sqlite_db_encrypted_path):
-                sqlite_temp_fd, self.sqlite_temp_path = tempfile.mkstemp(suffix=".db")
-                with open(self.sqlite_db_encrypted_path, 'rb') as enc_file:
-                    decrypted_data = self.encryptor.decrypt_data(enc_file.read())
-                with open(self.sqlite_temp_path, 'wb') as tmp:
-                    tmp.write(decrypted_data)
-                self.conn = sqlite3.connect(self.sqlite_temp_path)
-                logging.info("Decrypted and connected to the temporary SQLite database.")
-            else:
-                sqlite_temp_fd, self.sqlite_temp_path = tempfile.mkstemp(suffix=".db")
-                self.conn = sqlite3.connect(self.sqlite_temp_path)
-                logging.info("Initialized a new temporary SQLite database.")
+                try:
+                    with open(self.sqlite_db_encrypted_path, 'rb') as enc_file:
+                        decrypted_data = self.encryptor.decrypt_data(enc_file.read())
+
+                    # To load into memory, we must write to a temporary file first, then use backup.
+                    temp_db_fd, temp_db_path = tempfile.mkstemp(suffix=".db")
+                    with open(temp_db_path, 'wb') as tmp:
+                        tmp.write(decrypted_data)
+
+                    disk_conn = sqlite3.connect(temp_db_path)
+                    disk_conn.backup(self.conn)
+                    disk_conn.close()
+
+                    os.close(temp_db_fd)
+                    os.remove(temp_db_path)
+                    logging.info("Decrypted and loaded existing database into memory.")
+                except Exception as e:
+                    logging.error(f"Failed to load encrypted database: {e}")
+                    # Continue with an empty in-memory DB
         else:
             if self.sqlite_db_path is None:
                 self.sqlite_db_path = f"face_embeddings_{self.detector_type}_{self.encoder_model_type}.db"
             self.conn = sqlite3.connect(self.sqlite_db_path)
-            logging.info("Initialized SQLite database for persistent storage.")
 
         self.cursor = self.conn.cursor()
         self.cursor.execute('''
@@ -52,15 +60,22 @@ class DatabaseManager:
         logging.info("Initialized SQLite database for persistent storage.")
 
     def save(self):
-        if self.encryptor and self.sqlite_temp_path:
-            self.conn.commit()
+        if self.encryptor and self.sqlite_db_encrypted_path:
+            # To save from memory, we must write to a temporary file first, then encrypt.
+            temp_db_fd, temp_db_path = tempfile.mkstemp(suffix=".db")
+            disk_conn = sqlite3.connect(temp_db_path)
+            self.conn.backup(disk_conn)
+            disk_conn.close()
+
+            with open(temp_db_path, 'rb') as tmp:
+                db_data = tmp.read()
+
+            self.encryptor.encrypt_and_write(self.sqlite_db_encrypted_path, db_data)
             self.conn.close()
-            with open(self.sqlite_temp_path, 'rb') as tmp:
-                decrypted_data = tmp.read()
-            self.encryptor.encrypt_and_write(self.sqlite_db_encrypted_path, decrypted_data)
-            os.remove(self.sqlite_temp_path)
-            self.sqlite_temp_path = None
-            logging.info("Encrypted and saved the SQLite database.")
+
+            os.close(temp_db_fd)
+            os.remove(temp_db_path)
+            logging.info("Encrypted and saved the in-memory SQLite database.")
         elif not self.encryptor:
             self.conn.commit()
             self.conn.close()
