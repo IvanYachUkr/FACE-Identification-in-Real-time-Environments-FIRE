@@ -8,7 +8,7 @@ import uuid
 import cv2
 import numpy as np
 import os
-import ctypes
+from screeninfo import get_monitors
 
 from .detector import initialize_detector
 from .encoder import Encoder
@@ -16,6 +16,11 @@ from .encryption import Encryptor
 from .database import DatabaseManager
 from .hnsw_manager import HNSWManager
 from .tracker import initialize_tracker
+
+def _ensure_parent_dir(path: str):
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
 
 class FaceRecognition:
     def __init__(self,
@@ -191,6 +196,11 @@ class FaceRecognition:
             logging.error(f"Error in save_database_to_sqlite: {e}")
 
     def add_face(self, image: np.ndarray, label: str) -> bool:
+        """
+        Adds a face to the database.
+        Note: This function buffers new faces and adds them to the database in batches.
+        The buffer is flushed when it reaches `max_new` or when `save_database_to_sqlite` is called.
+        """
         try:
             faces = self.extract_faces(image, align=self.align)
             if not faces:
@@ -555,6 +565,7 @@ class FaceRecognition:
                         logging.warning("No matching face found to update with the provided label.")
 
                 if save_path:
+                    _ensure_parent_dir(save_path)
                     if self.encryption_password:
                         _, buffer = cv2.imencode('.jpg', image)
                         image_bytes = buffer.tobytes()
@@ -670,6 +681,7 @@ class FaceRecognition:
 
                 start_time = time.time()
                 if save_path:
+                    _ensure_parent_dir(save_path)
                     if self.encryption_password:
                         _, buffer = cv2.imencode('.jpg', annotated_image)
                         image_bytes = buffer.tobytes()
@@ -689,35 +701,45 @@ class FaceRecognition:
             logging.error(f"Error in process_image: {e}")
 
     def resize_frame_to_screen(self, frame):
-        user32 = ctypes.windll.user32
-        screen_width = user32.GetSystemMetrics(0)
-        screen_height = user32.GetSystemMetrics(1)
+        try:
+            # Get the primary monitor's dimensions
+            monitor = get_monitors()[0]
+            screen_width, screen_height = monitor.width, monitor.height
+        except Exception as e:
+            logging.warning(f"Could not get screen resolution using screeninfo: {e}. Defaulting to 1920x1080.")
+            screen_width, screen_height = 1920, 1080
 
         original_height, original_width = frame.shape[:2]
+
+        # Add a check for zero dimensions
+        if original_height == 0 or original_width == 0:
+            logging.warning("Cannot resize a frame with zero height or width.")
+            return frame
+
         frame_aspect_ratio = original_width / original_height
         screen_aspect_ratio = screen_width / screen_height
 
         if frame_aspect_ratio > screen_aspect_ratio:
+            # Frame is wider than the screen, fit to screen width
             new_width = screen_width
-            new_height = int(screen_width / frame_aspect_ratio)
+            new_height = int(new_width / frame_aspect_ratio)
         else:
+            # Frame is taller than or equal to the screen, fit to screen height
             new_height = screen_height
-            new_width = int(screen_height * frame_aspect_ratio)
+            new_width = int(new_height * frame_aspect_ratio)
+
+        # Ensure new dimensions are not zero
+        if new_width <= 0 or new_height <= 0:
+            logging.warning(f"Calculated new dimensions are invalid: {new_width}x{new_height}. Skipping resize.")
+            return frame
 
         resized_frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
         return resized_frame
 
-    def process_video(self, video_path: str, annotate: bool = True, save_path: str = None):
-        # Logic identical to original. Just use self.encoder, self.hnsw_manager, etc.
-        # For brevity, the logic is the same as original code, copy unchanged.
-        # (Due to length, not rewriting fully here)
+    def _process_stream(self, cap, annotate: bool = True, save_path: str = None, duration: int = 0, name: str = None, stream_type: str = "video"):
         try:
-            cap = cv2.VideoCapture(video_path)
-            if not cap.isOpened():
-                logging.error(f"Cannot open video file: {video_path}")
-                return
-
             if save_path:
+                _ensure_parent_dir(save_path)
                 fourcc = cv2.VideoWriter_fourcc(*'XVID')
                 fps = cap.get(cv2.CAP_PROP_FPS)
                 if fps == 0:
@@ -733,7 +755,7 @@ class FaceRecognition:
                     if not out.isOpened():
                         logging.error("Failed to open temporary video writer.")
                         return
-                    logging.info(f"Writing annotated video frames to temporary file: {temp_video_path}")
+                    logging.info(f"Writing annotated frames to temporary file: {temp_video_path}")
                 else:
                     out = cv2.VideoWriter(save_path, fourcc, fps, (width, height))
                     if not out.isOpened():
@@ -751,110 +773,8 @@ class FaceRecognition:
             while True:
                 ret, frame = cap.read()
                 if not ret:
-                    break
-
-
-
-                recognized_faces = self.recognize_faces(frame)
-
-                annotated_frame = frame.copy()
-                if annotate:
-                    for face in recognized_faces:
-                        bbox = face['bbox']
-                        label = face['label']
-                        confidence = face['confidence']
-                        cv2.rectangle(annotated_frame, (bbox[0], bbox[1]), (bbox[0] + bbox[2], bbox[1] + bbox[3]),
-                                      (255, 0, 0), 2)
-                        text = f"{label} ({confidence:.2f})"
-                        cv2.putText(annotated_frame, text, (bbox[0], bbox[1] - 10),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
-
-                if self.show:
-                    annotated_frame = self.resize_frame_to_screen(annotated_frame)
-                    cv2.imshow('Face Recognition - Video', annotated_frame)
-                    if cv2.waitKey(1) & 0xFF == ord('q'):
-                        logging.info("User requested to quit video processing.")
-                        break
-
-                if out:
-                    out.write(annotated_frame)
-
-            cap.release()
-            if out:
-                out.release()
-                if self.encryption_password and temp_video_path:
-                    try:
-                        with open(temp_video_path, 'rb') as tmp_video:
-                            video_bytes = tmp_video.read()
-                        self.encryptor.encrypt_and_write(save_path, video_bytes)
-                        logging.info(f"Encrypted video saved to {save_path}")
-                        os.remove(temp_video_path)
-                        logging.info(f"Temporary video file {temp_video_path} removed.")
-                    except Exception as e:
-                        logging.error(f"Error during encryption of video: {e}")
-                elif not self.encryption_password:
-                    logging.info(f"Annotated video saved to {save_path}")
-
-            if self.show:
-                cv2.destroyAllWindows()
-
-            end_time = time.time()
-            elapsed_time = end_time - self.start_time if self.start_time else 0
-            avg_detection_time = self.total_detection_time / self.frame_count if self.frame_count else 0
-            avg_encoding_time = self.total_encoding_time / self.frame_count if self.frame_count else 0
-            fps = self.frame_count / elapsed_time if elapsed_time > 0 else 0
-
-            logging.info(f"Processed {self.frame_count} frames in {elapsed_time:.2f} seconds.")
-            logging.info(f"Average Detection Time: {avg_detection_time * 1000:.2f} ms/frame")
-            logging.info(f"Average Encoding Time: {avg_encoding_time * 1000:.2f} ms/frame")
-            logging.info(f"Pipeline FPS: {fps:.2f}")
-
-        except Exception as e:
-            logging.error(f"Error in process_video: {e}")
-
-    def process_webcam(self, annotate: bool = True, save_path: str = None, duration: int = 0, name: str = None):
-        # Logic identical to original. Just rely on the modular structure now.
-        try:
-            cap = cv2.VideoCapture(0)
-            if not cap.isOpened():
-                logging.error("Cannot open webcam.")
-                return
-
-            if save_path:
-                fourcc = cv2.VideoWriter_fourcc(*'XVID')
-                fps = cap.get(cv2.CAP_PROP_FPS)
-                if fps == 0:
-                    fps = 30
-                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                temp_video_path = None
-
-                if self.encryption_password:
-                    temp_video_fd, temp_video_path = tempfile.mkstemp(suffix=".avi")
-                    os.close(temp_video_fd)
-                    out = cv2.VideoWriter(temp_video_path, fourcc, fps, (width, height))
-                    if not out.isOpened():
-                        logging.error("Failed to open temporary video writer.")
-                        return
-                    logging.info(f"Writing annotated webcam frames to temporary file: {temp_video_path}")
-                else:
-                    out = cv2.VideoWriter(save_path, fourcc, fps, (width, height))
-                    if not out.isOpened():
-                        logging.error(f"Failed to open video writer for {save_path}.")
-                        return
-                    logging.info(f"Saving annotated webcam video to {save_path}")
-            else:
-                out = None
-
-            self.total_detection_time = 0.0
-            self.total_encoding_time = 0.0
-            self.frame_count = 0
-            self.start_time = time.time()
-
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    logging.error("Failed to grab frame from webcam.")
+                    if stream_type == "webcam":
+                        logging.error("Failed to grab frame from webcam.")
                     break
 
                 recognized_faces = self.recognize_faces(frame, rename_label=name)
@@ -873,19 +793,18 @@ class FaceRecognition:
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
                 if self.show:
-                    cv2.imshow('Face Recognition - Webcam', annotated_frame)
+                    display_frame = self.resize_frame_to_screen(annotated_frame)
+                    cv2.imshow(f'Face Recognition - {stream_type.capitalize()}', display_frame)
                     if cv2.waitKey(1) & 0xFF == ord('q'):
-                        logging.info("User requested to quit webcam processing.")
+                        logging.info(f"User requested to quit {stream_type} processing.")
                         break
 
                 if out:
                     out.write(annotated_frame)
 
-                if duration > 0:
-                    elapsed_time = time.time() - self.start_time
-                    if elapsed_time >= duration:
-                        logging.info(f"Duration of {duration} seconds reached. Stopping webcam.")
-                        break
+                if duration > 0 and (time.time() - self.start_time) >= duration:
+                    logging.info(f"Duration of {duration} seconds reached. Stopping.")
+                    break
 
             cap.release()
             if out:
@@ -895,28 +814,42 @@ class FaceRecognition:
                         with open(temp_video_path, 'rb') as tmp_video:
                             video_bytes = tmp_video.read()
                         self.encryptor.encrypt_and_write(save_path, video_bytes)
-                        logging.info(f"Encrypted webcam video saved to {save_path}")
+                        logging.info(f"Encrypted video saved to {save_path}")
                         os.remove(temp_video_path)
                         logging.info(f"Temporary video file {temp_video_path} removed.")
                     except Exception as e:
-                        logging.error(f"Error during encryption of webcam video: {e}")
+                        logging.error(f"Error during encryption of video: {e}")
                 elif not self.encryption_password and save_path:
-                    logging.info(f"Annotated webcam video saved to {save_path}")
+                    logging.info(f"Annotated video saved to {save_path}")
 
             if self.show:
                 cv2.destroyAllWindows()
 
-            end_time = time.time()
-            elapsed_time = end_time - self.start_time if self.start_time else 0
-            avg_detection_time = self.total_detection_time / self.frame_count if self.frame_count else 0
-            avg_encoding_time = self.total_encoding_time / self.frame_count if self.frame_count else 0
-            fps = self.frame_count / elapsed_time if elapsed_time > 0 else 0
+        except Exception as e:
+            logging.error(f"Error in _process_stream: {e}")
+        finally:
+            if cap:
+                cap.release()
+            if self.show:
+                cv2.destroyAllWindows()
 
-            logging.info(f"Processed {self.frame_count} frames in {elapsed_time:.2f} seconds.")
-            logging.info(f"Average Detection Time: {avg_detection_time * 1000:.2f} ms/frame")
-            logging.info(f"Average Encoding Time: {avg_encoding_time * 1000:.2f} ms/frame")
-            logging.info(f"Pipeline FPS: {fps:.2f}")
+    def process_video(self, video_path: str, annotate: bool = True, save_path: str = None):
+        try:
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                logging.error(f"Cannot open video file: {video_path}")
+                return
+            self._process_stream(cap, annotate, save_path, stream_type="video")
+        except Exception as e:
+            logging.error(f"Error in process_video: {e}")
 
+    def process_webcam(self, annotate: bool = True, save_path: str = None, duration: int = 0, name: str = None):
+        try:
+            cap = cv2.VideoCapture(0)
+            if not cap.isOpened():
+                logging.error("Cannot open webcam.")
+                return
+            self._process_stream(cap, annotate, save_path, duration, name, stream_type="webcam")
         except Exception as e:
             logging.error(f"Error in process_webcam: {e}")
 
@@ -929,14 +862,15 @@ class FaceRecognition:
         except Exception as e:
             logging.error(f"Error closing FaceRecognition system: {e}")
 
-        if self.enable_logging and self.frame_count > 0:
+        if self.enable_logging and self.frame_count > 0 and self.start_time is not None:
             end_time = time.time()
-            elapsed_time = end_time - self.start_time if self.start_time else 0
-            avg_detection_time = self.total_detection_time / self.frame_count if self.frame_count else 0
-            avg_encoding_time = self.total_encoding_time / self.frame_count if self.frame_count else 0
+            elapsed_time = end_time - self.start_time
+            avg_detection_time = self.total_detection_time / self.frame_count
+            avg_encoding_time = self.total_encoding_time / self.frame_count
             fps = self.frame_count / elapsed_time if elapsed_time > 0 else 0
 
-            logging.info(f"Processed {self.frame_count} frames in {elapsed_time:.2f} seconds.")
+            logging.info(f"Total frames processed: {self.frame_count}")
+            logging.info(f"Total processing time: {elapsed_time:.2f} seconds")
+            logging.info(f"Average FPS: {fps:.2f}")
             logging.info(f"Average Detection Time: {avg_detection_time * 1000:.2f} ms/frame")
             logging.info(f"Average Encoding Time: {avg_encoding_time * 1000:.2f} ms/frame")
-            logging.info(f"Pipeline FPS: {fps:.2f}")

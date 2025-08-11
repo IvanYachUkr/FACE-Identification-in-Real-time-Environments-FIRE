@@ -8,3 +8,4 @@ psutil==6.1.1
 scipy==1.14.1
 opencv-python==4.10.0.84
 requests==2.32.2
+screeninfo==0.8.1

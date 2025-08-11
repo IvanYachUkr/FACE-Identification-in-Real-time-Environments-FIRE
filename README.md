@@ -74,6 +74,7 @@ psutil==6.1.1
 scipy==1.14.1
 opencv-python==4.10.0.84
 requests==2.32.2
+screeninfo==0.8.1
 ```
 
 Ensure all dependencies are installed for optimal performance.
@@ -125,6 +126,8 @@ python main.py --mode webcam --save /path/to/output.avi --show --annotate --pass
 | `--password`                 | Password for encrypting/decrypting database files and outputs.                                                  |
 | `--detector`                 | Specifies the face detection model: `mediapipe`, `yunet`, or `retinaface`.                                      |
 | `--encoder`                  | Specifies the encoder type: `128` (Facenet128) or `512` (Facenet512).                                           |
+| `--encoder_mode`             | Specifies the encoder mode: `cpu_optimized` or `gpu_optimized`.                                                  |
+| `--align`                    | Enables face alignment during processing.                                                                        |
 | `--detection_interval`       | Specifies the number of frames to skip for face detection (use `1` for processing all frames).                   |
 | `--core`                     | Restricts the program to a single core if set to `1`.                                                            |
 | `--annotate`/`--no-annotate` | Toggles the drawing of bounding boxes and labels on images/videos.                                              |

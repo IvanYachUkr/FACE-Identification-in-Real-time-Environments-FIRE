@@ -104,9 +104,6 @@ def detect_faces(image: np.ndarray, threshold: float = 0.9,
     # Calculate execution time
     execution_time = time.time() - start_time
 
-    # Display results
-    # print(f"RetinaFace: Extracted faces in {execution_time:.4f} seconds.")
-
     # Adjust net_out order according to the permutation in the ONNX model
     net_out = [net_out[i] for i in [7, 1, 4, 8, 0, 3, 6, 2, 5]]  # Adjust output order
 
