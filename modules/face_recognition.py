@@ -17,6 +17,11 @@ from .database import DatabaseManager
 from .hnsw_manager import HNSWManager
 from .tracker import initialize_tracker
 
+def _ensure_parent_dir(path: str):
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+
 class FaceRecognition:
     def __init__(self,
                  detector_type: str = 'yunet',
@@ -560,6 +565,7 @@ class FaceRecognition:
                         logging.warning("No matching face found to update with the provided label.")
 
                 if save_path:
+                    _ensure_parent_dir(save_path)
                     if self.encryption_password:
                         _, buffer = cv2.imencode('.jpg', image)
                         image_bytes = buffer.tobytes()
@@ -675,6 +681,7 @@ class FaceRecognition:
 
                 start_time = time.time()
                 if save_path:
+                    _ensure_parent_dir(save_path)
                     if self.encryption_password:
                         _, buffer = cv2.imencode('.jpg', annotated_image)
                         image_bytes = buffer.tobytes()
@@ -732,6 +739,7 @@ class FaceRecognition:
     def _process_stream(self, cap, annotate: bool = True, save_path: str = None, duration: int = 0, name: str = None, stream_type: str = "video"):
         try:
             if save_path:
+                _ensure_parent_dir(save_path)
                 fourcc = cv2.VideoWriter_fourcc(*'XVID')
                 fps = cap.get(cv2.CAP_PROP_FPS)
                 if fps == 0:

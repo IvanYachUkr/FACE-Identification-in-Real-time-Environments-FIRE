@@ -30,6 +30,7 @@ class DatabaseManager:
 
                     # To load into memory, we must write to a temporary file first, then use backup.
                     temp_db_fd, temp_db_path = tempfile.mkstemp(suffix=".db")
+                    os.close(temp_db_fd)
                     with open(temp_db_path, 'wb') as tmp:
                         tmp.write(decrypted_data)
 
@@ -63,6 +64,7 @@ class DatabaseManager:
         if self.encryptor and self.sqlite_db_encrypted_path:
             # To save from memory, we must write to a temporary file first, then encrypt.
             temp_db_fd, temp_db_path = tempfile.mkstemp(suffix=".db")
+            os.close(temp_db_fd)
             disk_conn = sqlite3.connect(temp_db_path)
             self.conn.backup(disk_conn)
             disk_conn.close()
