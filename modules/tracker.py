@@ -1,7 +1,5 @@
-# --------------------------------------------
-# File: modules/tracker.py
-# --------------------------------------------
-from sort_UKF import Sort
+from sort_UKF import SortTracker
+from modules.interfaces.tracker import Tracker
 
-def initialize_tracker():
-    return Sort(max_age=4, min_hits=4, iou_threshold=0.3)
+def initialize_tracker() -> Tracker:
+    return SortTracker(max_age=4, min_hits=4, iou_threshold=0.3)

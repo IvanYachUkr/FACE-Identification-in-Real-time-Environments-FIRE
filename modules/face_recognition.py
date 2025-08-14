@@ -100,7 +100,7 @@ class FaceRecognition:
         os.makedirs(hnsw_dir, exist_ok=True)
 
         # Initialize detector
-        self.detect_faces, self.extract_faces = initialize_detector(self.detector_type)
+        self.detector = initialize_detector(self.detector_type)
 
         # Initialize encoder
         self.encoder = Encoder(encoder_model_type, encoder_mode)
@@ -202,7 +202,7 @@ class FaceRecognition:
         The buffer is flushed when it reaches `max_new` or when `save_database_to_sqlite` is called.
         """
         try:
-            faces = self.extract_faces(image, align=self.align)
+            faces = self.detector.extract_faces(image, align=self.align)
             if not faces:
                 logging.warning("No faces detected to add.")
                 return False
@@ -378,7 +378,7 @@ class FaceRecognition:
         # Only run face detection every self.detection_interval frames
         if (self.frame_index % self.detection_interval == 0):
             start_detection = time.time()
-            detected_faces = self.detect_faces(image)
+            detected_faces = self.detector.detect_faces(image)
             detection_time = time.time() - start_detection
             self.total_detection_time += detection_time
 
@@ -499,7 +499,7 @@ class FaceRecognition:
             timing['Image Loading'] = time.time() - start_time
 
             start_time = time.time()
-            detected_faces = self.detect_faces(image)
+            detected_faces = self.detector.detect_faces(image)
             detection_time = time.time() - start_time
             self.total_detection_time += detection_time
             timing['Face Detection'] = detection_time

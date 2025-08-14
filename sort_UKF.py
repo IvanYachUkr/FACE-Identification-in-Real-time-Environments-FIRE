@@ -476,3 +476,12 @@ def visualize_tracks(frame: np.ndarray, tracks: List[TrackOutput]) -> np.ndarray
             2
         )
     return frame
+
+from modules.interfaces.tracker import Tracker
+
+class SortTracker(Tracker):
+    def __init__(self, max_age: int = 30, min_hits: int = 3, iou_threshold: float = 0.3, max_distance: float = 200.0):
+        self.sort_tracker = Sort(max_age=max_age, min_hits=min_hits, iou_threshold=iou_threshold, max_distance=max_distance)
+
+    def update(self, detections: List[Dict[str, any]]) -> List[Dict[str, any]]:
+        return self.sort_tracker.update(detections)
